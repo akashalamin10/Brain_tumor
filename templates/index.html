@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain Tumor AI Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+:root { --text-color:#fff; }
+body {
+    margin: 0; padding: 0; min-height: 100vh;
+    display: flex; flex-direction: column; justify-content: space-between; align-items: center;
+    font-family: "Roboto", Arial, sans-serif;
+    /* Ensure static/images/bg22.jpg exists */
+    background: url("{{ url_for('static', filename='images/bg22.jpg') }}") no-repeat center center fixed; 
+    background-size: cover;
+    color: var(--text-color);
+    overflow-x: hidden;
+}
+.app {
+    max-width:1000px; margin:40px auto; padding:25px;
+    background:rgba(255,255,255,0.1); border-radius:12px;
+    box-shadow:0 6px 20px rgba(0,0,0,0.1); backdrop-filter: blur(15px);
+}
+input, select, button { margin-bottom:10px; }
+.preview-img { width:100%; max-height:300px; object-fit:contain; border-radius:8px; margin-bottom:12px; }
+#progressBarContainer { width: 100%; background-color: rgba(255,255,255,0.2); border-radius: 8px; overflow: hidden; height: 30px; margin-top: 10px; display: none; }
+#progressBar { height: 100%; width: 0%; background: linear-gradient(90deg, #4caf50 0%, #2e7d32 100%); color: white; font-weight: bold; text-align: center; line-height: 30px; transition: width 0.3s ease; }
+.session-history { margin-top:20px; display:grid; grid-template-columns:1fr 1fr; gap:12px; max-height:300px; overflow-y:auto; }
+.session-item { background:rgba(255,255,255,0.1); padding:8px; border-radius:8px; display:flex; gap:10px; align-items:center; }
+.session-item img { width:60px; height:60px; object-fit:cover; border-radius:6px; border:1px solid #ccc; }
+
+/* Toggle Switch */
+.switch { position: absolute; top: 20px; right: 20px; display: inline-block; width: 50px; height: 28px; }
+.switch input { display:none; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 28px; }
+.slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+input:checked + .slider { background-color: #2e3092; }
+input:checked + .slider:before { transform: translateX(22px); }
+.dark-mode { 
+    background-color: #1e1e2f; 
+    background-image: none; 
+    color:#f0f0f0; 
+}
+.dark-mode .app { background:rgba(44, 44, 60, 0.9); }
+.dark-mode .session-item { background:rgba(58, 58, 80, 0.9); }
+footer { width: 100%; text-align: center; padding: 10px 0; font-size: 12px; color: var(--text-color); background-color: rgba(0, 0, 0, 0.5); }
+</style>
+</head>
+<body>
+
+<div class="app">
+    <h3>Brain Tumor AI Dashboard</h3>
+    <p>Upload an MRI image to predict tumor type</p>
+
+    <input type="text" id="patientName" placeholder="Patient Name" class="form-control">
+    <input type="number" id="patientAge" placeholder="Age" class="form-control">
+    <select id="patientGender" class="form-control">
+      <option value="">Select Gender</option>
+      <option value="Male">Male</option>
+      <option value="Female">Female</option>
+      <option value="Other">Other</option>
+    </select>
+
+    <input type="file" id="fileInput" accept="image/*" class="form-control">
+    <button id="predictBtn" class="btn btn-primary">Predict</button>
+    <button id="downloadPdfBtn" class="btn btn-success">Download Full Report</button>
+
+    <label class="switch">
+      <input type="checkbox" id="darkModeToggle">
+      <span class="slider"></span>
+    </label>
+
+    <div class="dashboard d-flex flex-wrap gap-4 mt-3">
+        <div class="left-panel flex-fill" id="previewArea"></div>
+        <div class="right-panel flex-fill">
+            <div id="resultArea"></div>
+            <canvas id="confidenceGauge" style="max-width:250px; height:250px;"></canvas>
+            <canvas id="probChart" style="max-width:100%; height:200px;"></canvas>
+            <div id="progressBarContainer"><div id="progressBar">0%</div></div>
+        </div>
+    </div>
+
+    <h5 class="mt-4">Session History</h5>
+    <div class="session-history" id="sessionHistory"></div>
+</div>
+
+<footer>
+      All Rights Reserved &copy; Daffodil International University <br />
+      Developed by MD. AL AMIN AKASH CSE-60
+</footer>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const predictBtn = document.getElementById('predictBtn');
+const downloadPdfBtn = document.getElementById('downloadPdfBtn');
+const darkModeToggle = document.getElementById('darkModeToggle');
+const previewArea = document.getElementById('previewArea');
+const resultArea = document.getElementById('resultArea');
+const sessionHistory = document.getElementById('sessionHistory');
+const gaugeCtx = document.getElementById('confidenceGauge').getContext('2d');
+const probChartCtx = document.getElementById('probChart').getContext('2d');
+const progressBar = document.getElementById('progressBar');
+const progressContainer = document.getElementById('progressBarContainer');
+
+let selectedFile = null;
+let gaugeChart = null;
+let probChart = null;
+let lastPrediction = null;
+
+
+// =========================================================
+// FIX: Set Chart.js global defaults for white text 
+// =========================================================
+Chart.defaults.color = '#ffffff'; 
+Chart.defaults.font.family = '"Roboto", Arial, sans-serif'; 
+// Also ensure tooltips are white
+Chart.defaults.plugins.tooltip.bodyColor = '#ffffff';
+Chart.defaults.plugins.tooltip.titleColor = '#ffffff';
+// =========================================================
+
+
+fileInput.addEventListener('change', e=>{
+    selectedFile = e.target.files[0];
+    if(selectedFile){
+        previewArea.innerHTML = `<img src="${URL.createObjectURL(selectedFile)}" class="preview-img">`;
+        resultArea.innerHTML = '';
+        if(gaugeChart) gaugeChart.destroy();
+        if(probChart) probChart.destroy();
+        lastPrediction = null;
+    }
+});
+
+predictBtn.addEventListener('click', async ()=>{
+    if(!selectedFile){ alert('Please select an image'); return; }
+
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+
+    // Show and animate progress bar
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressBar.innerText = '0%';
+    let progress = 0;
+    const interval = setInterval(()=>{
+        if(progress>=90) clearInterval(interval);
+        else{
+            progress += Math.floor(Math.random()*5)+1;
+            if(progress>90) progress=90;
+            progressBar.style.width = progress + '%';
+            progressBar.innerText = progress + '%';
+        }
+    },200);
+
+    resultArea.innerHTML='Predicting...';
+
+    try{
+        const res = await fetch('/predict',{method:'POST', body:fd});
+        const data = await res.json();
+        
+        // Finalize progress bar
+        clearInterval(interval);
+        progressBar.style.width = '100%';
+        progressBar.innerText = '100%';
+        setTimeout(()=>{ progressContainer.style.display='none'; },500);
+
+        if(data.error){ 
+            resultArea.innerHTML = `<div class="text-danger">Error: ${data.error}</div>`; 
+        }
+        else{
+            lastPrediction = data;
+
+            // Determine badge color (Tumor is Red, No Tumor is Green)
+            const badgeColor = data.predicted_label === 'notumor' ? 'bg-success' : 'bg-danger';
+
+            // Show original + Grad-CAM
+            previewArea.innerHTML = `
+                <img src="${data.image_url}" class="preview-img">
+                <p style="text-align:center;">Original Image</p>
+                <img src="${data.gradcam_url}" class="preview-img">
+                <p style="text-align:center;">Grad-CAM Overlay</p>
+            `;
+
+            resultArea.innerHTML = `
+                <span class="badge ${badgeColor}">${data.predicted_label.toUpperCase()}</span>
+                <div>Confidence: ${data.confidence.toFixed(2)}%</div>
+            `;
+
+            // --- Confidence Gauge Chart (Doughnut/Half-Pie) ---
+            if(gaugeChart) gaugeChart.destroy();
+            gaugeChart = new Chart(gaugeCtx,{
+                type:'doughnut',
+                data:{ 
+                    labels:['Confidence','Remaining'], 
+                    datasets:[{
+                        data:[data.confidence, 100-data.confidence], 
+                        backgroundColor:[badgeColor==='bg-success'?'#28a745':'#dc3545', '#e0e0e0'], 
+                        borderWidth:0
+                    }] 
+                },
+                options:{ 
+                    rotation:-90, 
+                    circumference:180, 
+                    plugins:{
+                        legend:{display:false}, 
+                        tooltip:{enabled:true}
+                    }, 
+                    animation:{animateRotate:true,duration:1000} 
+                }
+            });
+
+            // --- All-Classes Probability Bar Chart ---
+            const classNames = Object.keys(data.all_probs);
+            const classProbs = Object.values(data.all_probs);
+
+            const barColors = classNames.map(name => {
+                if (name === data.predicted_label) return badgeColor === 'bg-danger' ? '#dc3545' : '#28a745'; 
+                if (name === 'notumor') return '#28a745';
+                return '#ffc107'; 
+            });
+
+
+            if(probChart) probChart.destroy();
+            probChart = new Chart(probChartCtx,{
+                type:'bar',
+                data:{
+                    labels: classNames, 
+                    datasets:[{
+                        label:'Probability (%)',
+                        data: classProbs, 
+                        backgroundColor: barColors
+                    }]
+                },
+                options:{
+                    scales:{
+                        y:{
+                            beginAtZero:true,
+                            max:100,
+                            // Ticks color is already set globally, but explicitly here for clarity
+                            ticks: { color: 'white' }, 
+                            grid: { color: 'rgba(255, 255, 255, 0.2)' } // Light transparent lines
+                        },
+                        x: {
+                            // Ticks color is already set globally, but explicitly here for clarity
+                            ticks: { color: 'white' }, 
+                            grid: { display: false }
+                        }
+                    },
+                    plugins:{
+                        legend:{display:false},
+                        tooltip: { enabled: true }
+                    },
+                    animation:{duration:1000,easing:'easeOutBounce'}
+                }
+            });
+
+
+            // Add to Session History
+            const sessionItem = document.createElement('div');
+            sessionItem.className='session-item';
+            sessionItem.innerHTML = `<img src="${data.gradcam_url}" alt="img"><div><strong>${data.predicted_label.toUpperCase()}</strong><br>${data.confidence.toFixed(2)}% confidence</div>`;
+            sessionHistory.prepend(sessionItem);
+        }
+    }catch(err){ 
+        clearInterval(interval); 
+        progressBar.style.width='0%'; 
+        progressBar.innerText='0%'; 
+        progressContainer.style.display='none';
+        console.error("Fetch/JSON processing error:", err); 
+        resultArea.innerHTML='<div class="text-danger">Prediction failed (Client-side error)</div>'; 
+    }
+});
+
+// Dark mode toggle
+darkModeToggle.addEventListener('change', ()=>{ document.body.classList.toggle('dark-mode'); });
+
+// Download PDF
+downloadPdfBtn.addEventListener('click', async ()=>{
+    if(!selectedFile || !lastPrediction){ alert('No prediction to download. Please predict first.'); return; }
+    
+    // Get patient info
+    const patientInfo = {
+        Name: document.getElementById('patientName').value,
+        Age: document.getElementById('patientAge').value,
+        Gender: document.getElementById('patientGender').value
+    };
+    
+    try{
+        const res = await fetch('/download_pdf',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                image_url: lastPrediction.image_url, 
+                gradcam_url: lastPrediction.gradcam_url, 
+                prediction: lastPrediction, 
+                patient_info: patientInfo
+            })
+        });
+        
+        if (res.status !== 200) {
+            const errorText = await res.text();
+            try {
+                const errorData = JSON.parse(errorText);
+                alert(`PDF generation failed: ${errorData.error || 'Unknown error'}`);
+            } catch {
+                alert(`PDF generation failed: Server returned an unexpected error.`);
+            }
+            return;
+        }
+
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download='patient_report.pdf'; a.click();
+        window.URL.revokeObjectURL(url);
+    }catch(err){ 
+        console.error("PDF download fetch error:", err); 
+        alert('PDF download failed. Check console for details.'); 
+    }
+});
+</script>
+</body>
+</html>
